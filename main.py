@@ -1,8 +1,7 @@
 import os
 import json
 import random
-import traceback
-from typing import List
+from typing import List, Dict, Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -20,9 +19,13 @@ load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Stable models
-PRIMARY_MODEL = "gemini-2.5-flash"
-BACKUP_MODEL = "gemini-2.5-flash-lite"
+# Current primary model
+PRIMARY_MODEL = "gemini-2.5-flash-lite"
+
+# Second model only if available to the API key
+BACKUP_MODEL = "gemini-2.5-flash"
+
+PORT = int(os.getenv("PORT", "8000"))
 
 
 # ============================================================
@@ -50,21 +53,29 @@ app.add_middleware(
 client = None
 
 if GEMINI_API_KEY:
+
     try:
+
         client = genai.Client(
             api_key=GEMINI_API_KEY
         )
 
+        print("==============================================")
         print("Gemini client initialized successfully.")
+        print("==============================================")
 
     except Exception as e:
+
         print("Gemini client initialization error:")
         print(str(e))
 
         client = None
 
 else:
-    print("WARNING: GEMINI_API_KEY not found.")
+
+    print("==============================================")
+    print("WARNING: GEMINI_API_KEY NOT FOUND")
+    print("==============================================")
 
 
 # ============================================================
@@ -92,11 +103,19 @@ class QuizRequest(BaseModel):
 def root():
 
     return {
-        "status": "success",
-        "message": "Study With Raman AI Backend is running",
+        "status": "ok",
+        "server": "running",
         "gemini_configured": client is not None,
         "primary_model": PRIMARY_MODEL,
-        "backup_model": BACKUP_MODEL
+        "backup_model": BACKUP_MODEL,
+        "features": [
+            "AI Tutor",
+            "Smart Notes",
+            "AI Quiz",
+            "Fallback Quiz",
+            "Health Check",
+            "AI Test"
+        ]
     }
 
 
@@ -117,59 +136,58 @@ def health():
 
 
 # ============================================================
-# GEMINI STATUS TEST
+# GEMINI RESPONSE HELPER
 # ============================================================
 
-@app.get("/test-ai")
-def test_ai():
-
-    if client is None:
-
-        return {
-            "status": "error",
-            "gemini": False,
-            "message": "GEMINI_API_KEY is not configured."
-        }
-
-    try:
-
-        answer = ask_gemini(
-            "Reply with only: Study With Raman AI is working."
-        )
-
-        return {
-            "status": "success",
-            "gemini": True,
-            "model": answer["model"],
-            "answer": answer["text"]
-        }
-
-    except Exception as e:
-
-        print("TEST AI ERROR:")
-        print(str(e))
-
-        return {
-            "status": "error",
-            "gemini": True,
-            "message": str(e)
-        }
-
-
-# ============================================================
-# GEMINI HELPER
-# ============================================================
-
-def ask_gemini(prompt: str):
+def generate_with_model(
+    model_name: str,
+    prompt: str
+) -> str:
 
     if client is None:
 
         raise Exception(
-            "Gemini client is not configured. "
-            "Check GEMINI_API_KEY."
+            "Gemini API key is not configured."
         )
 
-    errors = []
+    print("----------------------------------------------")
+    print(f"Trying Gemini model: {model_name}")
+    print("----------------------------------------------")
+
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt
+    )
+
+    text = getattr(
+        response,
+        "text",
+        None
+    )
+
+    if not text:
+
+        raise Exception(
+            "Gemini returned an empty response."
+        )
+
+    return text.strip()
+
+
+# ============================================================
+# SAFE GEMINI FUNCTION
+# ============================================================
+
+def ask_gemini(prompt: str) -> str:
+
+    if client is None:
+
+        raise Exception(
+            "Gemini API key is not configured."
+        )
+
+    primary_error = None
+    backup_error = None
 
     # --------------------------------------------------------
     # PRIMARY MODEL
@@ -177,45 +195,25 @@ def ask_gemini(prompt: str):
 
     try:
 
+        result = generate_with_model(
+            PRIMARY_MODEL,
+            prompt
+        )
+
         print(
-            f"Trying Gemini primary model: {PRIMARY_MODEL}"
+            f"Gemini primary model worked: {PRIMARY_MODEL}"
         )
 
-        response = client.models.generate_content(
-            model=PRIMARY_MODEL,
-            contents=prompt
-        )
-
-        text = getattr(response, "text", None)
-
-        if text and text.strip():
-
-            print(
-                f"Gemini primary model worked: {PRIMARY_MODEL}"
-            )
-
-            return {
-                "text": text.strip(),
-                "model": PRIMARY_MODEL
-            }
-
-        raise Exception(
-            "Primary model returned empty response."
-        )
+        return result
 
     except Exception as e:
 
-        error_text = str(e)
+        primary_error = str(e)
 
-        print(
-            "Primary Gemini model failed:"
-        )
-
-        print(error_text)
-
-        errors.append(
-            f"{PRIMARY_MODEL}: {error_text}"
-        )
+        print("==============================================")
+        print("PRIMARY GEMINI ERROR")
+        print(primary_error)
+        print("==============================================")
 
 
     # --------------------------------------------------------
@@ -224,225 +222,36 @@ def ask_gemini(prompt: str):
 
     try:
 
+        result = generate_with_model(
+            BACKUP_MODEL,
+            prompt
+        )
+
         print(
-            f"Trying Gemini backup model: {BACKUP_MODEL}"
+            f"Gemini backup model worked: {BACKUP_MODEL}"
         )
 
-        response = client.models.generate_content(
-            model=BACKUP_MODEL,
-            contents=prompt
-        )
-
-        text = getattr(response, "text", None)
-
-        if text and text.strip():
-
-            print(
-                f"Gemini backup model worked: {BACKUP_MODEL}"
-            )
-
-            return {
-                "text": text.strip(),
-                "model": BACKUP_MODEL
-            }
-
-        raise Exception(
-            "Backup model returned empty response."
-        )
+        return result
 
     except Exception as e:
 
-        error_text = str(e)
+        backup_error = str(e)
 
-        print(
-            "Backup Gemini model failed:"
-        )
-
-        print(error_text)
-
-        errors.append(
-            f"{BACKUP_MODEL}: {error_text}"
-        )
+        print("==============================================")
+        print("BACKUP GEMINI ERROR")
+        print(backup_error)
+        print("==============================================")
 
 
     # --------------------------------------------------------
-    # BOTH MODELS FAILED
+    # BOTH FAILED
     # --------------------------------------------------------
 
-    final_error = "\n".join(errors)
-
-    raise Exception(final_error)
-
-
-# ============================================================
-# CHECK GEMINI ERROR TYPE
-# ============================================================
-
-def is_gemini_quota_or_model_error(error_text: str) -> bool:
-
-    text = error_text.lower()
-
-    keywords = [
-        "quota",
-        "429",
-        "resource exhausted",
-        "rate limit",
-        "too many requests",
-        "billing",
-        "permission denied",
-        "not found",
-        "404",
-        "model",
-        "limit"
-    ]
-
-    return any(
-        keyword in text
-        for keyword in keywords
+    raise Exception(
+        "Both Gemini models failed.\n"
+        f"Primary: {primary_error}\n"
+        f"Backup: {backup_error}"
     )
-
-
-# ============================================================
-# LOCAL TUTOR FALLBACK
-# ============================================================
-
-def local_tutor_answer(question: str) -> str:
-
-    q = question.lower().strip()
-
-    if "photosynthesis" in q:
-
-        return """
-Photosynthesis is the process by which green plants make their food.
-
-Simple explanation:
-
-1. Plants take carbon dioxide from the air.
-2. Roots absorb water from the soil.
-3. Chlorophyll captures sunlight.
-4. Using sunlight, plants convert water and carbon dioxide into glucose.
-5. Oxygen is released into the atmosphere.
-
-Formula:
-
-Carbon dioxide + Water + Sunlight → Glucose + Oxygen
-
-In short:
-Plants use sunlight to make food and release oxygen.
-""".strip()
-
-
-    if "gravity" in q:
-
-        return """
-Gravity is the force that attracts objects toward each other.
-
-On Earth, gravity pulls objects toward the Earth's center.
-
-Example:
-When you throw a ball upward, it comes back down because Earth's gravity pulls it downward.
-
-Simple definition:
-Gravity is the force that pulls objects toward Earth.
-""".strip()
-
-
-    if "newton" in q:
-
-        return """
-Newton's Laws of Motion explain how objects move.
-
-1. First Law:
-An object remains at rest or continues moving unless an external force acts on it.
-
-2. Second Law:
-Force = Mass × Acceleration.
-
-3. Third Law:
-For every action, there is an equal and opposite reaction.
-
-Example:
-When you push a wall, the wall pushes back with an equal and opposite force.
-""".strip()
-
-
-    if "cpu" in q:
-
-        return """
-CPU stands for Central Processing Unit.
-
-It is often called the brain of a computer because it processes instructions and performs calculations.
-
-Main functions:
-• Executes instructions
-• Performs calculations
-• Controls operations
-• Processes data
-
-Example:
-When you open an application, the CPU processes the instructions needed to run it.
-""".strip()
-
-
-    if "ram" in q:
-
-        return """
-RAM stands for Random Access Memory.
-
-RAM is temporary memory used by a computer or phone while applications are running.
-
-More RAM generally allows a device to handle more applications at the same time.
-
-Example:
-If you open several apps, they use RAM to keep their active data available.
-""".strip()
-
-
-    if "python" in q:
-
-        return """
-Python is a high-level programming language.
-
-It is popular because its syntax is relatively simple and easy to read.
-
-Python is used for:
-• Artificial Intelligence
-• Machine Learning
-• Web development
-• Automation
-• Data science
-• Backend development
-
-Example:
-
-print("Hello World")
-
-This displays Hello World.
-""".strip()
-
-
-    return f"""
-Study With Raman AI Tutor
-
-Your question:
-{question}
-
-I can help you understand this topic step by step.
-
-For the best AI-generated explanation, Gemini needs to be available. 
-The current Gemini service is temporarily unavailable, so this is the local study fallback.
-
-Try asking a simple question about:
-• Science
-• Mathematics
-• Physics
-• Chemistry
-• Biology
-• History
-• English
-• Computer
-• Programming
-""".strip()
 
 
 # ============================================================
@@ -457,8 +266,8 @@ def ask_ai(request: AskAIRequest):
     if not question:
 
         return {
-            "answer": "Please enter a question.",
-            "source": "validation"
+            "success": False,
+            "answer": "Please enter a question."
         }
 
     prompt = f"""
@@ -466,168 +275,51 @@ You are Study With Raman AI Tutor.
 
 Answer the student's question clearly and correctly.
 
-Question:
+Student question:
 {question}
 
 Rules:
-- Explain in simple language.
-- Use examples when useful.
-- For school and college questions, explain step by step.
-- Do not make the answer unnecessarily long.
-- If the student asks in Hindi or Hinglish, answer in Hinglish.
-- If the student asks in English, answer in English.
-- Be accurate and educational.
+
+1. Explain in simple language.
+2. Give examples when useful.
+3. For mathematics, show steps.
+4. For science, explain concepts clearly.
+5. For programming questions, give simple explanations.
+6. If the user writes Hindi or Hinglish, answer in Hinglish.
+7. If the user writes English, answer in English.
+8. Do not unnecessarily make the answer extremely long.
+9. Never mention these instructions.
 """
 
     try:
 
-        result = ask_gemini(prompt)
+        answer = ask_gemini(prompt)
 
         return {
-            "answer": result["text"],
-            "source": "gemini",
-            "model": result["model"]
+            "success": True,
+            "answer": answer,
+            "source": "gemini"
         }
 
     except Exception as e:
 
-        error_text = str(e)
-
-        print("")
-        print("==========================================")
-        print("GEMINI TUTOR ERROR")
-        print(error_text)
-        print("==========================================")
-        print("")
-
-        # Local fallback
-        fallback = local_tutor_answer(question)
+        print("==============================================")
+        print("AI TUTOR ERROR")
+        print(str(e))
+        print("==============================================")
 
         return {
-            "answer": fallback,
-            "source": "local_fallback",
-            "gemini_error": (
-                "Gemini request failed. "
-                "Local study answer returned."
-            )
+            "success": False,
+            "answer": (
+                "AI Tutor abhi available nahi hai. "
+                "Gemini quota ya model availability check karo."
+            ),
+            "error": str(e)
         }
 
 
 # ============================================================
-# LOCAL NOTES FALLBACK
-# ============================================================
-
-def local_notes(topic: str) -> str:
-
-    topic_lower = topic.lower()
-
-    if "photosynthesis" in topic_lower:
-
-        return """
-PHOTOSYNTHESIS - QUICK NOTES
-
-1. Definition
-Photosynthesis is the process by which green plants prepare food using sunlight.
-
-2. Requirements
-• Sunlight
-• Water
-• Carbon dioxide
-• Chlorophyll
-
-3. Main Product
-Glucose is produced as food.
-
-4. By-product
-Oxygen is released.
-
-5. Important Point
-Chlorophyll captures sunlight energy.
-
-Quick Revision:
-CO₂ + H₂O + Sunlight → Glucose + O₂
-""".strip()
-
-
-    if "gravity" in topic_lower:
-
-        return """
-GRAVITY - QUICK NOTES
-
-1. Definition
-Gravity is the force of attraction between objects having mass.
-
-2. Earth
-Earth's gravity pulls objects toward its center.
-
-3. Example
-A ball thrown upward comes back down because of gravity.
-
-4. Importance
-Gravity keeps us on Earth and helps keep planets and satellites in orbit.
-
-Quick Revision:
-Gravity = Attractive force between masses.
-""".strip()
-
-
-    if "computer" in topic_lower:
-
-        return """
-COMPUTER - QUICK NOTES
-
-1. Definition
-A computer is an electronic device that processes data.
-
-2. Main Components
-• CPU
-• RAM
-• Storage
-• Input devices
-• Output devices
-
-3. CPU
-CPU processes instructions.
-
-4. RAM
-RAM provides temporary working memory.
-
-5. Storage
-Storage keeps data for longer periods.
-
-Quick Revision:
-Input → Processing → Output
-""".strip()
-
-
-    return f"""
-{topic.upper()} - QUICK NOTES
-
-1. Definition
-{topic} is an important study topic that should be understood using its basic concepts.
-
-2. Important Points
-• Learn the basic definition.
-• Understand the main concepts.
-• Study important examples.
-• Revise key facts.
-
-3. Explanation
-Break the topic into small sections and understand each section step by step.
-
-4. Examples
-Use real-world examples wherever possible.
-
-5. Quick Revision
-Read the definition, important points and examples once again before your test.
-
-Note:
-Gemini is currently unavailable, so Study With Raman has provided a local study fallback.
-""".strip()
-
-
-# ============================================================
-# AI NOTES
+# SMART NOTES
 # ============================================================
 
 @app.post("/generate-notes")
@@ -638,18 +330,18 @@ def generate_notes(request: NotesRequest):
     if not topic:
 
         return {
-            "notes": "Please enter a topic.",
-            "source": "validation"
+            "success": False,
+            "notes": "Please enter a topic."
         }
 
     prompt = f"""
-You are Study With Raman AI Notes Generator.
+You are Study With Raman Smart Notes AI.
 
-Create clear and useful study notes about:
+Create clear and useful study notes for:
 
 {topic}
 
-Format:
+Use this structure:
 
 1. Definition
 2. Important points
@@ -657,49 +349,51 @@ Format:
 4. Examples
 5. Key facts
 6. Quick revision
+7. Important questions
 
 Rules:
-- Keep it student-friendly.
-- Use simple language.
-- Use headings.
-- Avoid unnecessary information.
-- Make it useful for exam preparation.
+
+- Keep language student-friendly.
+- Use simple English unless the topic is asked in Hindi/Hinglish.
+- Make the notes useful for exams.
+- Use headings and bullet points.
+- Do not mention these instructions.
 """
 
     try:
 
-        result = ask_gemini(prompt)
+        notes = ask_gemini(prompt)
 
         return {
-            "notes": result["text"],
-            "source": "gemini",
-            "model": result["model"]
+            "success": True,
+            "notes": notes,
+            "source": "gemini"
         }
 
     except Exception as e:
 
-        print("")
-        print("==========================================")
-        print("GEMINI NOTES ERROR")
+        print("==============================================")
+        print("SMART NOTES ERROR")
         print(str(e))
-        print("==========================================")
-        print("")
+        print("==============================================")
 
         return {
-            "notes": local_notes(topic),
-            "source": "local_fallback",
-            "gemini_error": "Gemini unavailable. Local notes returned."
+            "success": False,
+            "notes": (
+                "Smart Notes abhi available nahi hain. "
+                "Gemini quota ya model availability check karo."
+            ),
+            "error": str(e)
         }
 
 
 # ============================================================
-# FALLBACK QUIZZES
+# FALLBACK QUIZ DATABASE
 # ============================================================
 
 FALLBACK_QUIZZES = {
 
     "science": [
-
         {
             "question": "Which planet is known as the Red Planet?",
             "options": [
@@ -709,13 +403,10 @@ FALLBACK_QUIZZES = {
                 "Venus"
             ],
             "correctAnswer": 1,
-            "explanation":
-                "Mars is called the Red Planet because of iron oxide on its surface."
+            "explanation": "Mars is called the Red Planet because of iron oxide on its surface."
         },
-
         {
-            "question":
-                "What gas do plants mainly use during photosynthesis?",
+            "question": "What gas do plants mainly use during photosynthesis?",
             "options": [
                 "Oxygen",
                 "Nitrogen",
@@ -723,10 +414,8 @@ FALLBACK_QUIZZES = {
                 "Hydrogen"
             ],
             "correctAnswer": 2,
-            "explanation":
-                "Plants use carbon dioxide during photosynthesis."
+            "explanation": "Plants use carbon dioxide during photosynthesis."
         },
-
         {
             "question": "What is H2O commonly known as?",
             "options": [
@@ -736,13 +425,10 @@ FALLBACK_QUIZZES = {
                 "Salt"
             ],
             "correctAnswer": 1,
-            "explanation":
-                "H2O is the chemical formula for water."
+            "explanation": "H2O is the chemical formula for water."
         },
-
         {
-            "question":
-                "Which organ pumps blood around the human body?",
+            "question": "Which organ pumps blood around the human body?",
             "options": [
                 "Brain",
                 "Lungs",
@@ -750,13 +436,10 @@ FALLBACK_QUIZZES = {
                 "Kidney"
             ],
             "correctAnswer": 2,
-            "explanation":
-                "The heart pumps blood throughout the body."
+            "explanation": "The heart pumps blood throughout the body."
         },
-
         {
-            "question":
-                "What force pulls objects toward Earth?",
+            "question": "What force pulls objects toward Earth?",
             "options": [
                 "Magnetism",
                 "Gravity",
@@ -764,14 +447,11 @@ FALLBACK_QUIZZES = {
                 "Electricity"
             ],
             "correctAnswer": 1,
-            "explanation":
-                "Gravity attracts objects toward Earth."
+            "explanation": "Gravity attracts objects toward Earth."
         }
     ],
 
-
     "math": [
-
         {
             "question": "What is 12 × 5?",
             "options": [
@@ -781,9 +461,8 @@ FALLBACK_QUIZZES = {
                 "80"
             ],
             "correctAnswer": 1,
-            "explanation": "12 × 5 = 60."
+            "explanation": "12 multiplied by 5 equals 60."
         },
-
         {
             "question": "What is the square of 10?",
             "options": [
@@ -795,7 +474,6 @@ FALLBACK_QUIZZES = {
             "correctAnswer": 2,
             "explanation": "10 × 10 = 100."
         },
-
         {
             "question": "What is 100 ÷ 4?",
             "options": [
@@ -805,9 +483,8 @@ FALLBACK_QUIZZES = {
                 "40"
             ],
             "correctAnswer": 1,
-            "explanation": "100 ÷ 4 = 25."
+            "explanation": "100 divided by 4 equals 25."
         },
-
         {
             "question": "What is 15 + 27?",
             "options": [
@@ -819,7 +496,6 @@ FALLBACK_QUIZZES = {
             "correctAnswer": 1,
             "explanation": "15 + 27 = 42."
         },
-
         {
             "question": "What is 9 × 9?",
             "options": [
@@ -833,12 +509,9 @@ FALLBACK_QUIZZES = {
         }
     ],
 
-
     "history": [
-
         {
-            "question":
-                "Who played a leading role in drafting the Constitution of India?",
+            "question": "Who was known as the Father of the Indian Constitution?",
             "options": [
                 "Mahatma Gandhi",
                 "Dr. B. R. Ambedkar",
@@ -846,13 +519,10 @@ FALLBACK_QUIZZES = {
                 "Sardar Patel"
             ],
             "correctAnswer": 1,
-            "explanation":
-                "Dr. B. R. Ambedkar played a leading role in drafting the Constitution."
+            "explanation": "Dr. B. R. Ambedkar played a leading role in drafting the Indian Constitution."
         },
-
         {
-            "question":
-                "Who was the first Prime Minister of independent India?",
+            "question": "Who was the first Prime Minister of independent India?",
             "options": [
                 "Sardar Patel",
                 "Jawaharlal Nehru",
@@ -860,13 +530,10 @@ FALLBACK_QUIZZES = {
                 "Subhas Chandra Bose"
             ],
             "correctAnswer": 1,
-            "explanation":
-                "Jawaharlal Nehru became India's first Prime Minister."
+            "explanation": "Jawaharlal Nehru became India's first Prime Minister."
         },
-
         {
-            "question":
-                "India became independent in which year?",
+            "question": "India became independent in which year?",
             "options": [
                 "1945",
                 "1946",
@@ -874,10 +541,8 @@ FALLBACK_QUIZZES = {
                 "1950"
             ],
             "correctAnswer": 2,
-            "explanation":
-                "India became independent in 1947."
+            "explanation": "India became independent on 15 August 1947."
         },
-
         {
             "question": "Who is known as the Mahatma?",
             "options": [
@@ -887,13 +552,10 @@ FALLBACK_QUIZZES = {
                 "Swami Vivekananda"
             ],
             "correctAnswer": 0,
-            "explanation":
-                "Mahatma Gandhi is widely known as Mahatma Gandhi."
+            "explanation": "Mahatma Gandhi is widely known as the Mahatma."
         },
-
         {
-            "question":
-                "The Constitution of India came into effect in which year?",
+            "question": "The Constitution of India came into effect in which year?",
             "options": [
                 "1947",
                 "1948",
@@ -901,14 +563,11 @@ FALLBACK_QUIZZES = {
                 "1952"
             ],
             "correctAnswer": 2,
-            "explanation":
-                "The Constitution came into effect in 1950."
+            "explanation": "The Constitution came into effect on 26 January 1950."
         }
     ],
 
-
     "english": [
-
         {
             "question": "What is the opposite of 'hot'?",
             "options": [
@@ -918,10 +577,8 @@ FALLBACK_QUIZZES = {
                 "Fire"
             ],
             "correctAnswer": 1,
-            "explanation":
-                "The opposite of hot is cold."
+            "explanation": "The opposite of hot is cold."
         },
-
         {
             "question": "Which word is a noun?",
             "options": [
@@ -931,10 +588,8 @@ FALLBACK_QUIZZES = {
                 "Quickly"
             ],
             "correctAnswer": 2,
-            "explanation":
-                "School is a noun because it names a place."
+            "explanation": "School is a noun because it names a place."
         },
-
         {
             "question": "What is the past tense of 'go'?",
             "options": [
@@ -944,10 +599,8 @@ FALLBACK_QUIZZES = {
                 "Going"
             ],
             "correctAnswer": 2,
-            "explanation":
-                "The past tense of go is went."
+            "explanation": "The past tense of go is went."
         },
-
         {
             "question": "Which word is an adjective?",
             "options": [
@@ -957,10 +610,8 @@ FALLBACK_QUIZZES = {
                 "Quickly"
             ],
             "correctAnswer": 0,
-            "explanation":
-                "Beautiful is an adjective."
+            "explanation": "Beautiful is an adjective."
         },
-
         {
             "question": "Choose the correct article: ___ apple",
             "options": [
@@ -970,14 +621,11 @@ FALLBACK_QUIZZES = {
                 "No article"
             ],
             "correctAnswer": 1,
-            "explanation":
-                "We use 'an' before the vowel sound in apple."
+            "explanation": "We use 'an' before a vowel sound: an apple."
         }
     ],
 
-
     "computer": [
-
         {
             "question": "What does CPU stand for?",
             "options": [
@@ -987,13 +635,10 @@ FALLBACK_QUIZZES = {
                 "Control Processing User"
             ],
             "correctAnswer": 0,
-            "explanation":
-                "CPU stands for Central Processing Unit."
+            "explanation": "CPU stands for Central Processing Unit."
         },
-
         {
-            "question":
-                "Which device is used to type text?",
+            "question": "Which device is used to type text?",
             "options": [
                 "Monitor",
                 "Keyboard",
@@ -1001,10 +646,8 @@ FALLBACK_QUIZZES = {
                 "Printer"
             ],
             "correctAnswer": 1,
-            "explanation":
-                "A keyboard is used to type text."
+            "explanation": "A keyboard is used to type text."
         },
-
         {
             "question": "What does RAM stand for?",
             "options": [
@@ -1014,10 +657,8 @@ FALLBACK_QUIZZES = {
                 "Random Application Module"
             ],
             "correctAnswer": 0,
-            "explanation":
-                "RAM stands for Random Access Memory."
+            "explanation": "RAM stands for Random Access Memory."
         },
-
         {
             "question": "Which is an operating system?",
             "options": [
@@ -1027,13 +668,10 @@ FALLBACK_QUIZZES = {
                 "Chrome"
             ],
             "correctAnswer": 0,
-            "explanation":
-                "Android is an operating system."
+            "explanation": "Android is an operating system."
         },
-
         {
-            "question":
-                "Which language is commonly used for Android development?",
+            "question": "Which language is commonly used for Android development?",
             "options": [
                 "Kotlin",
                 "HTML only",
@@ -1041,15 +679,14 @@ FALLBACK_QUIZZES = {
                 "CSS"
             ],
             "correctAnswer": 0,
-            "explanation":
-                "Kotlin is a primary language used for Android development."
+            "explanation": "Kotlin is commonly used for Android development."
         }
     ]
 }
 
 
 # ============================================================
-# FALLBACK QUIZ CREATOR
+# FALLBACK QUIZ
 # ============================================================
 
 def create_fallback_quiz(
@@ -1093,15 +730,6 @@ def create_fallback_quiz(
     ):
 
         selected_key = "computer"
-
-    elif (
-        "science" in topic_lower
-        or "physics" in topic_lower
-        or "chemistry" in topic_lower
-        or "biology" in topic_lower
-    ):
-
-        selected_key = "science"
 
     source = FALLBACK_QUIZZES[selected_key]
 
@@ -1156,6 +784,7 @@ Required format:
 }}
 
 Rules:
+
 - Exactly 4 options per question.
 - correctAnswer must be 0, 1, 2, or 3.
 - Questions must be factually correct.
@@ -1164,11 +793,10 @@ Rules:
 - No text outside JSON.
 """
 
-    result = ask_gemini(prompt)
+    text = ask_gemini(prompt)
 
-    text = result["text"].strip()
+    text = text.strip()
 
-    # Remove markdown fences if Gemini accidentally returns them
     if text.startswith("```"):
 
         text = text.replace(
@@ -1237,10 +865,7 @@ Rules:
             "AI did not return valid quiz questions."
         )
 
-    return {
-        "questions": clean_questions[:number_of_questions],
-        "model": result["model"]
-    }
+    return clean_questions[:number_of_questions]
 
 
 # ============================================================
@@ -1257,8 +882,8 @@ def generate_quiz(request: QuizRequest):
     if not topic:
 
         return {
+            "success": False,
             "questions": [],
-            "source": "error",
             "message": "Please enter a quiz topic."
         }
 
@@ -1269,12 +894,12 @@ def generate_quiz(request: QuizRequest):
         number = 20
 
     # --------------------------------------------------------
-    # TRY GEMINI
+    # TRY AI
     # --------------------------------------------------------
 
     try:
 
-        result = generate_ai_quiz(
+        questions = generate_ai_quiz(
             topic,
             number
         )
@@ -1284,84 +909,70 @@ def generate_quiz(request: QuizRequest):
         )
 
         return {
-            "questions": result["questions"],
+            "success": True,
+            "questions": questions,
             "source": "gemini",
-            "model": result["model"],
             "message": "AI quiz generated successfully."
         }
 
     except Exception as e:
 
-        print("")
-        print("==========================================")
-        print("GEMINI QUIZ ERROR")
+        print("==============================================")
+        print("QUIZ GEMINI ERROR")
         print(str(e))
-        print("==========================================")
-        print("")
-
-        # ----------------------------------------------------
-        # FALLBACK QUIZ
-        # ----------------------------------------------------
+        print("==============================================")
 
         fallback_questions = create_fallback_quiz(
             topic,
             number
         )
 
-        print(
-            f"Fallback Quiz used for topic: {topic}"
-        )
-
         return {
+            "success": True,
             "questions": fallback_questions,
             "source": "fallback",
-            "message": (
-                "Gemini unavailable. "
-                "Fallback quiz returned."
-            )
+            "message": "Fallback quiz returned."
         }
 
 
 # ============================================================
-# SERVER INFO
+# AI TEST
 # ============================================================
 
-@app.get("/server-info")
-def server_info():
+@app.get("/test-ai")
+def test_ai():
 
-    return {
-        "app": "Study With Raman",
-        "backend": "FastAPI",
-        "status": "running",
-        "gemini_configured": client is not None,
-        "primary_model": PRIMARY_MODEL,
-        "backup_model": BACKUP_MODEL,
-        "features": [
-            "AI Tutor",
-            "Smart Notes",
-            "AI Quiz",
-            "Fallback Tutor",
-            "Fallback Notes",
-            "Fallback Quiz",
-            "Health Check",
-            "AI Test"
-        ]
-    }
+    try:
+
+        answer = ask_gemini(
+            "Reply with exactly: Study With Raman AI is working."
+        )
+
+        return {
+            "success": True,
+            "message": answer,
+            "model": PRIMARY_MODEL
+        }
+
+    except Exception as e:
+
+        return {
+            "success": False,
+            "message": "Gemini AI is currently unavailable.",
+            "error": str(e)
+        }
 
 
 # ============================================================
 # STARTUP MESSAGE
 # ============================================================
 
-print("")
 print("==============================================")
 print("       STUDY WITH RAMAN AI BACKEND")
 print("==============================================")
 print(f"Primary Model : {PRIMARY_MODEL}")
 print(f"Backup Model  : {BACKUP_MODEL}")
-print(
-    f"Gemini Ready  : {client is not None}"
-)
+print(f"Gemini Ready  : {client is not None}")
 print("Features      :")
 print("  - AI Tutor")
 print("  - Smart Notes")
@@ -1369,5 +980,5 @@ print("  - AI Quiz")
 print("  - Local Fallback")
 print("  - Health Check")
 print("  - AI Test")
+print("Server ready")
 print("==============================================")
-print("")
