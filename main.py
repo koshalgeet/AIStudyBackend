@@ -1,4 +1,5 @@
 import os
+import json
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +20,10 @@ app.add_middleware(
 )
 
 
+# ============================================================
+# REQUEST MODELS
+# ============================================================
+
 class QuestionRequest(BaseModel):
     question: str
 
@@ -32,6 +37,10 @@ class QuizRequest(BaseModel):
     number_of_questions: int = 5
 
 
+# ============================================================
+# HOME
+# ============================================================
+
 @app.get("/")
 def home():
     return {
@@ -39,8 +48,13 @@ def home():
     }
 
 
+# ============================================================
+# HEALTH
+# ============================================================
+
 @app.get("/health")
 def health():
+
     api_key = os.getenv("GEMINI_API_KEY")
 
     return {
@@ -50,13 +64,17 @@ def health():
     }
 
 
+# ============================================================
+# GEMINI
+# ============================================================
+
 def ask_gemini(prompt: str):
 
     api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
         raise Exception(
-            "GEMINI_API_KEY is missing in Render Environment Variables"
+            "GEMINI_API_KEY is missing"
         )
 
     client = genai.Client(
@@ -78,26 +96,29 @@ def ask_gemini(prompt: str):
     return answer
 
 
+# ============================================================
+# AI TUTOR
+# ============================================================
+
 @app.post("/ask-ai")
 def ask_ai(request: QuestionRequest):
 
     try:
 
         prompt = f"""
-You are Raman AI Tutor, a helpful and professional teacher.
+You are Raman AI Tutor.
 
-Answer the student's question clearly and correctly.
+Answer the student's question clearly.
 
 Rules:
-- Explain in simple language.
-- If the student asks in Hindi or Hinglish, answer in Hindi or Hinglish.
-- If the student asks in English, answer in English.
-- Give examples when useful.
-- Make the explanation easy for students.
-- Answer directly without unnecessary information.
+- Give a short and direct answer by default.
+- Use simple language.
+- If the question is in Hindi or Hinglish, answer in Hindi or Hinglish.
+- If the question is in English, answer in English.
+- Give an example only when useful.
+- Do not add unnecessary information.
 
 Student Question:
-
 {request.question}
 """
 
@@ -109,15 +130,16 @@ Student Question:
 
     except Exception as e:
 
-        print("=" * 60)
-        print("AI TUTOR ERROR")
-        print(str(e))
-        print("=" * 60)
+        print("AI TUTOR ERROR:", str(e))
 
         return {
             "answer": "AI Tutor Error: " + str(e)
         }
 
+
+# ============================================================
+# SMART NOTES
+# ============================================================
 
 @app.post("/generate-notes")
 def generate_notes(request: TopicRequest):
@@ -125,7 +147,7 @@ def generate_notes(request: TopicRequest):
     try:
 
         prompt = f"""
-Create easy and detailed study notes about:
+Create clear and easy study notes about:
 
 {request.topic}
 
@@ -134,11 +156,11 @@ Include:
 1. Introduction
 2. Important concepts
 3. Simple explanation
-4. Examples
+4. Examples where useful
 5. Key points
 6. Short summary
 
-Make the notes easy for students to understand.
+Use simple language suitable for students.
 """
 
         answer = ask_gemini(prompt)
@@ -149,10 +171,16 @@ Make the notes easy for students to understand.
 
     except Exception as e:
 
+        print("NOTES ERROR:", str(e))
+
         return {
             "notes": "Error: " + str(e)
         }
 
+
+# ============================================================
+# AI QUIZ
+# ============================================================
 
 @app.post("/generate-quiz")
 def generate_quiz(request: QuizRequest):
@@ -160,39 +188,102 @@ def generate_quiz(request: QuizRequest):
     try:
 
         prompt = f"""
-Create a quiz about:
+Create exactly {request.number_of_questions} multiple-choice
+quiz questions about:
 
-Topic: {request.topic}
+{request.topic}
 
-Number of questions: {request.number_of_questions}
+Return ONLY valid JSON.
 
-For each question provide:
+Do not use markdown.
+Do not use ```json.
+Do not write any explanation outside the JSON.
 
-Question
-A. Option
-B. Option
-C. Option
-D. Option
+Use exactly this format:
 
-Then clearly show:
+{{
+  "questions": [
+    {{
+      "question": "Question text here",
+      "options": [
+        "Option A",
+        "Option B",
+        "Option C",
+        "Option D"
+      ],
+      "correctAnswer": 0,
+      "explanation": "Short explanation"
+    }}
+  ]
+}}
 
-Correct Answer: A/B/C/D
+Rules:
 
-Make the quiz useful for students.
+- Every question must have exactly 4 options.
+- correctAnswer must be a number from 0 to 3.
+- 0 means first option is correct.
+- 1 means second option is correct.
+- 2 means third option is correct.
+- 3 means fourth option is correct.
+- Return exactly {request.number_of_questions} questions.
+- Return only JSON.
 """
 
         answer = ask_gemini(prompt)
 
-        return {
-            "quiz": answer
-        }
+        # Remove accidental markdown formatting
+        answer = answer.strip()
+
+        if answer.startswith("```json"):
+            answer = answer.replace(
+                "```json",
+                "",
+                1
+            )
+
+        if answer.startswith("```"):
+            answer = answer.replace(
+                "```",
+                "",
+                1
+            )
+
+        if answer.endswith("```"):
+            answer = answer[:-3]
+
+        answer = answer.strip()
+
+        # Convert Gemini JSON text into real JSON
+        quiz_data = json.loads(answer)
+
+        if "questions" not in quiz_data:
+            raise Exception(
+                "Questions key missing from Gemini response"
+            )
+
+        if not isinstance(
+            quiz_data["questions"],
+            list
+        ):
+            raise Exception(
+                "Questions is not a list"
+            )
+
+        return quiz_data
 
     except Exception as e:
 
+        print("QUIZ ERROR:", str(e))
+
         return {
-            "quiz": "Error: " + str(e)
+            "questions": [],
+            "error": str(e)
         }
 
+
+# ============================================================
+# PRACTICE TEST
+# ============================================================
 
 @app.post("/ai-test")
 def ai_test(request: TopicRequest):
@@ -200,7 +291,7 @@ def ai_test(request: TopicRequest):
     try:
 
         prompt = f"""
-Create a practice test about:
+Create a useful practice test about:
 
 {request.topic}
 
@@ -210,7 +301,7 @@ Include:
 2. Short answer questions
 3. Correct answers at the end
 
-Make it suitable for students.
+Use simple language for students.
 """
 
         answer = ask_gemini(prompt)
@@ -220,6 +311,8 @@ Make it suitable for students.
         }
 
     except Exception as e:
+
+        print("PRACTICE TEST ERROR:", str(e))
 
         return {
             "test": "Error: " + str(e)
