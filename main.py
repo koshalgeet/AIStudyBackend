@@ -1,5 +1,3 @@
-# main.py
-
 import os
 
 from fastapi import FastAPI
@@ -7,129 +5,126 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
 
+
 app = FastAPI(
-title="Study With Raman AI Backend"
+    title="Study With Raman AI Backend"
 )
+
 
 app.add_middleware(
-CORSMiddleware,
-allow_origins=["*"],
-allow_credentials=True,
-allow_methods=["*"],
-allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# Current Gemini Interactions API model
-
-GEMINI_MODEL = "gemini-3.6-flash"
 
 class QuestionRequest(BaseModel):
-question: str
+    question: str
+
 
 class TopicRequest(BaseModel):
-topic: str
+    topic: str
+
 
 class QuizRequest(BaseModel):
-topic: str
-number_of_questions: int = 5
+    topic: str
+    number_of_questions: int = 5
+
 
 @app.get("/")
-def root():
-return {
-"message": "Study With Raman AI Backend is running",
-"model": GEMINI_MODEL
-}
+def home():
+    return {
+        "message": "Study With Raman AI Backend is running"
+    }
+
 
 @app.get("/health")
 def health():
-return {
-"status": "healthy",
-"model": GEMINI_MODEL,
-"gemini_api_key_found": bool(GEMINI_API_KEY)
-}
+    api_key = os.getenv("GEMINI_API_KEY")
 
-def get_ai_answer(prompt: str):
+    return {
+        "status": "healthy",
+        "api_key_found": bool(api_key),
+        "model": "gemini-3.6-flash"
+    }
 
-```
-if not GEMINI_API_KEY:
-    raise Exception(
-        "GEMINI_API_KEY is not configured in Render Environment Variables."
+
+def ask_gemini(prompt: str):
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise Exception(
+            "GEMINI_API_KEY is missing in Render Environment Variables"
+        )
+
+    client = genai.Client(
+        api_key=api_key
     )
 
-client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=prompt
+    )
 
-interaction = client.interactions.create(
-    model=GEMINI_MODEL,
-    input=prompt
-)
+    answer = response.text
 
-answer = interaction.output_text
+    if not answer:
+        raise Exception(
+            "Gemini returned an empty answer"
+        )
 
-if not answer:
-    raise Exception("Gemini returned an empty response.")
+    return answer
 
-return answer
-```
 
 @app.post("/ask-ai")
 def ask_ai(request: QuestionRequest):
 
-```
-try:
-    prompt = f"""
-```
+    try:
 
-You are Raman AI Tutor, a helpful professional teacher.
+        prompt = f"""
+You are Raman AI Tutor, a helpful and professional teacher.
 
 Answer the student's question clearly and correctly.
 
-Instructions:
-
-* Explain in simple language.
-* If the question is in Hindi or Hinglish, answer in Hindi/Hinglish.
-* If the question is in English, answer in English.
-* Give examples when helpful.
-* Make the answer easy for students to understand.
-* Do not say that you are unavailable unless there is a real error.
+Rules:
+- Explain in simple language.
+- If the student asks in Hindi or Hinglish, answer in Hindi or Hinglish.
+- If the student asks in English, answer in English.
+- Give examples when useful.
+- Make the explanation easy for students.
+- Answer directly without unnecessary information.
 
 Student Question:
+
 {request.question}
 """
 
-```
-    answer = get_ai_answer(prompt)
+        answer = ask_gemini(prompt)
 
-    return {
-        "answer": answer
-    }
+        return {
+            "answer": answer
+        }
 
-except Exception as e:
+    except Exception as e:
 
-    print("=" * 60)
-    print("AI TUTOR ERROR")
-    print(str(e))
-    print("=" * 60)
+        print("=" * 60)
+        print("AI TUTOR ERROR")
+        print(str(e))
+        print("=" * 60)
 
-    return {
-        "answer": f"AI Tutor Error: {str(e)}"
-    }
-```
+        return {
+            "answer": "AI Tutor Error: " + str(e)
+        }
+
 
 @app.post("/generate-notes")
 def generate_notes(request: TopicRequest):
 
-```
-try:
+    try:
 
-    prompt = f"""
-```
-
-You are a professional teacher.
-
+        prompt = f"""
 Create easy and detailed study notes about:
 
 {request.topic}
@@ -143,39 +138,35 @@ Include:
 5. Key points
 6. Short summary
 
-Make the notes easy for students.
+Make the notes easy for students to understand.
 """
 
-```
-    answer = get_ai_answer(prompt)
+        answer = ask_gemini(prompt)
 
-    return {
-        "notes": answer
-    }
+        return {
+            "notes": answer
+        }
 
-except Exception as e:
+    except Exception as e:
 
-    return {
-        "notes": f"Error: {str(e)}"
-    }
-```
+        return {
+            "notes": "Error: " + str(e)
+        }
+
 
 @app.post("/generate-quiz")
 def generate_quiz(request: QuizRequest):
 
-```
-try:
+    try:
 
-    prompt = f"""
-```
-
-Create a student quiz about:
+        prompt = f"""
+Create a quiz about:
 
 Topic: {request.topic}
 
 Number of questions: {request.number_of_questions}
 
-For every question provide:
+For each question provide:
 
 Question
 A. Option
@@ -183,55 +174,53 @@ B. Option
 C. Option
 D. Option
 
-Then provide the correct answer.
+Then clearly show:
 
-Make the quiz educational and easy to understand.
+Correct Answer: A/B/C/D
+
+Make the quiz useful for students.
 """
 
-```
-    answer = get_ai_answer(prompt)
+        answer = ask_gemini(prompt)
 
-    return {
-        "quiz": answer
-    }
+        return {
+            "quiz": answer
+        }
 
-except Exception as e:
+    except Exception as e:
 
-    return {
-        "quiz": f"Error: {str(e)}"
-    }
-```
+        return {
+            "quiz": "Error: " + str(e)
+        }
+
 
 @app.post("/ai-test")
 def ai_test(request: TopicRequest):
 
-```
-try:
+    try:
 
-    prompt = f"""
-```
-
+        prompt = f"""
 Create a practice test about:
 
 {request.topic}
 
-Include multiple choice questions and short answer questions.
+Include:
 
-At the end provide correct answers.
+1. Multiple choice questions
+2. Short answer questions
+3. Correct answers at the end
 
-Make it useful for students.
+Make it suitable for students.
 """
 
-```
-    answer = get_ai_answer(prompt)
+        answer = ask_gemini(prompt)
 
-    return {
-        "test": answer
-    }
+        return {
+            "test": answer
+        }
 
-except Exception as e:
+    except Exception as e:
 
-    return {
-        "test": f"Error: {str(e)}"
-    }
-```
+        return {
+            "test": "Error: " + str(e)
+        }
