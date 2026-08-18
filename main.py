@@ -1,9 +1,12 @@
+
+````python
 import os
 import json
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from google import genai
 
 
@@ -14,7 +17,6 @@ from google import genai
 app = FastAPI(
     title="Study With Raman AI Backend"
 )
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,7 +41,20 @@ class TopicRequest(BaseModel):
 
 class QuizRequest(BaseModel):
     topic: str
-    number_of_questions: int = 5
+    number_of_questions: int = Field(
+        default=5,
+        ge=1,
+        le=10
+    )
+
+
+class FlashcardRequest(BaseModel):
+    topic: str
+    number_of_cards: int = Field(
+        default=5,
+        ge=1,
+        le=20
+    )
 
 
 # ============================================================
@@ -80,35 +95,73 @@ def health():
 
 
 # ============================================================
+# ERROR HANDLING
+# ============================================================
+
+def handle_gemini_error(error: Exception):
+
+    error_text = str(error)
+
+    print("GEMINI ERROR:", error_text)
+
+    if (
+        "429" in error_text
+        or "RESOURCE_EXHAUSTED" in error_text
+        or "quota" in error_text.lower()
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "AI request limit temporarily reached. "
+                "Please wait a little and try again."
+            )
+        )
+
+    raise HTTPException(
+        status_code=500,
+        detail="AI service is temporarily unavailable. Please try again."
+    )
+
+
+# ============================================================
 # GEMINI FUNCTION
 # ============================================================
 
-def ask_gemini(prompt: str):
+def ask_gemini(prompt: str) -> str:
 
     api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
-        raise Exception(
-            "GEMINI_API_KEY is missing in Render Environment Variables"
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY is missing."
         )
 
     client = genai.Client(
         api_key=api_key
     )
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt
-    )
+    try:
 
-    answer = response.text
-
-    if not answer or not answer.strip():
-        raise Exception(
-            "Gemini returned an empty response"
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt
         )
 
-    return answer.strip()
+        answer = response.text
+
+        if not answer or not answer.strip():
+            raise Exception(
+                "Gemini returned an empty response"
+            )
+
+        return answer.strip()
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        handle_gemini_error(error)
 
 
 # ============================================================
@@ -118,9 +171,15 @@ def ask_gemini(prompt: str):
 @app.post("/ask-ai")
 def ask_ai(request: QuestionRequest):
 
-    try:
+    question = request.question.strip()
 
-        prompt = f"""
+    if not question:
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty."
+        )
+
+    prompt = f"""
 You are Raman AI Tutor.
 
 Answer the student's question clearly and correctly.
@@ -136,23 +195,14 @@ Rules:
 
 Student Question:
 
-{request.question}
+{question}
 """
 
-        answer = ask_gemini(prompt)
+    answer = ask_gemini(prompt)
 
-        return {
-            "answer": answer
-        }
-
-    except Exception as e:
-
-        print("AI TUTOR ERROR:", str(e))
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+    return {
+        "answer": answer
+    }
 
 
 # ============================================================
@@ -162,12 +212,18 @@ Student Question:
 @app.post("/generate-notes")
 def generate_notes(request: TopicRequest):
 
-    try:
+    topic = request.topic.strip()
 
-        prompt = f"""
+    if not topic:
+        raise HTTPException(
+            status_code=400,
+            detail="Topic cannot be empty."
+        )
+
+    prompt = f"""
 Create simple and useful study notes about:
 
-{request.topic}
+{topic}
 
 Include:
 
@@ -182,20 +238,11 @@ Use easy language.
 Do not make the answer unnecessarily long.
 """
 
-        answer = ask_gemini(prompt)
+    answer = ask_gemini(prompt)
 
-        return {
-            "notes": answer
-        }
-
-    except Exception as e:
-
-        print("NOTES ERROR:", str(e))
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+    return {
+        "notes": answer
+    }
 
 
 # ============================================================
@@ -205,14 +252,18 @@ Do not make the answer unnecessarily long.
 @app.post("/generate-quiz")
 def generate_quiz(request: QuizRequest):
 
-    try:
+    topic = request.topic.strip()
 
-        prompt = f"""
+    if not topic:
+        raise HTTPException(
+            status_code=400,
+            detail="Topic cannot be empty."
+        )
+
+    prompt = f"""
 Create exactly {request.number_of_questions} multiple choice quiz questions.
 
-Topic: {request.topic}
-
-IMPORTANT:
+Topic: {topic}
 
 Return ONLY valid JSON.
 
@@ -243,17 +294,14 @@ Rules:
 - Generate exactly {request.number_of_questions} questions.
 - Every question must have exactly 4 options.
 - correctAnswer must be a number from 0 to 3.
-- 0 means first option.
-- 1 means second option.
-- 2 means third option.
-- 3 means fourth option.
 - explanation should be short.
 - Return JSON only.
 """
 
+    try:
+
         answer = ask_gemini(prompt)
 
-        # Remove markdown if Gemini still sends it
         cleaned = answer.strip()
 
         if cleaned.startswith("```json"):
@@ -267,36 +315,42 @@ Rules:
 
         cleaned = cleaned.strip()
 
-        # Find JSON object safely
         start = cleaned.find("{")
         end = cleaned.rfind("}")
 
         if start == -1 or end == -1:
-            raise Exception(
-                "Gemini did not return valid JSON"
+            raise ValueError(
+                "Gemini did not return valid JSON."
             )
 
-        cleaned = cleaned[start:end + 1]
+        data = json.loads(
+            cleaned[start:end + 1]
+        )
 
-        data = json.loads(cleaned)
-
-        questions = data.get("questions", [])
-
-        if not isinstance(questions, list):
-            raise Exception(
-                "Invalid questions format"
-            )
+        questions = data.get(
+            "questions",
+            []
+        )
 
         valid_questions = []
 
         for item in questions:
 
-            question = item.get("question", "")
-            options = item.get("options", [])
+            question = item.get(
+                "question",
+                ""
+            )
+
+            options = item.get(
+                "options",
+                []
+            )
+
             correct_answer = item.get(
                 "correctAnswer",
                 0
             )
+
             explanation = item.get(
                 "explanation",
                 ""
@@ -308,35 +362,159 @@ Rules:
                 and isinstance(options, list)
                 and len(options) == 4
                 and isinstance(correct_answer, int)
-                and correct_answer >= 0
-                and correct_answer <= 3
+                and 0 <= correct_answer <= 3
             ):
 
                 valid_questions.append(
                     {
-                        "question": question,
+                        "question": question.strip(),
                         "options": options,
                         "correctAnswer": correct_answer,
-                        "explanation": explanation
+                        "explanation": str(explanation)
                     }
                 )
 
-        if len(valid_questions) == 0:
-            raise Exception(
-                "No valid quiz questions generated"
+        if not valid_questions:
+            raise ValueError(
+                "No valid quiz questions generated."
             )
 
         return {
             "questions": valid_questions
         }
 
-    except Exception as e:
+    except HTTPException:
+        raise
 
-        print("QUIZ ERROR:", str(e))
+    except Exception as error:
+
+        print("QUIZ ERROR:", str(error))
 
         raise HTTPException(
             status_code=500,
-            detail=str(e)
+            detail="Quiz could not be generated. Please try again."
+        )
+
+
+# ============================================================
+# FLASHCARDS
+# ============================================================
+
+@app.post("/generate-flashcards")
+def generate_flashcards(
+    request: FlashcardRequest
+):
+
+    topic = request.topic.strip()
+
+    if not topic:
+        raise HTTPException(
+            status_code=400,
+            detail="Topic cannot be empty."
+        )
+
+    prompt = f"""
+Create exactly {request.number_of_cards} useful study flashcards.
+
+Topic: {topic}
+
+Return ONLY valid JSON.
+
+Use exactly this format:
+
+{{
+  "flashcards": [
+    {{
+      "front": "Question or term",
+      "back": "Short simple answer"
+    }}
+  ]
+}}
+
+Rules:
+
+- Generate exactly {request.number_of_cards} flashcards.
+- Keep answers short and easy to remember.
+- Return JSON only.
+"""
+
+    try:
+
+        answer = ask_gemini(prompt)
+
+        cleaned = answer.strip()
+
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+
+        cleaned = cleaned.strip()
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+
+        if start == -1 or end == -1:
+            raise ValueError(
+                "Gemini did not return valid JSON."
+            )
+
+        data = json.loads(
+            cleaned[start:end + 1]
+        )
+
+        flashcards = data.get(
+            "flashcards",
+            []
+        )
+
+        valid_cards = []
+
+        for item in flashcards:
+
+            front = str(
+                item.get("front", "")
+            ).strip()
+
+            back = str(
+                item.get("back", "")
+            ).strip()
+
+            if front and back:
+
+                valid_cards.append(
+                    {
+                        "front": front,
+                        "back": back
+                    }
+                )
+
+        if not valid_cards:
+            raise ValueError(
+                "No valid flashcards generated."
+            )
+
+        return {
+            "flashcards": valid_cards
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+
+        print(
+            "FLASHCARDS ERROR:",
+            str(error)
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Flashcards could not be generated. Please try again."
         )
 
 
@@ -347,33 +525,33 @@ Rules:
 @app.post("/ai-test")
 def ai_test(request: TopicRequest):
 
-    try:
+    topic = request.topic.strip()
 
-        prompt = f"""
-Create a practice test about:
+    if not topic:
+        raise HTTPException(
+            status_code=400,
+            detail="Topic cannot be empty."
+        )
 
-{request.topic}
+    prompt = f"""
+Create a useful practice test about:
+
+{topic}
 
 Include:
 
-1. Multiple choice questions
-2. Short answer questions
-3. Correct answers
+1. Five multiple choice questions.
+2. Three short answer questions.
+3. A separate answer key at the end.
 
-Use simple language.
+Use simple and clear language.
+
+Make the practice test suitable for students.
 """
 
-        answer = ask_gemini(prompt)
+    answer = ask_gemini(prompt)
 
-        return {
-            "test": answer
-        }
-
-    except Exception as e:
-
-        print("TEST ERROR:", str(e))
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+    return {
+        "test": answer
+    }
+````
